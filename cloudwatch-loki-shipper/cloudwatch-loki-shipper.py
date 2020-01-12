@@ -10,15 +10,15 @@ from string import Template
 from collections import namedtuple
 
 
+def _is_json(message):
+    if message.startswith("{"):
+        return True
+
+
 def _decode_log_data(event):
     compressed_payload = base64.b64decode(event["awslogs"]["data"])
     decoded_payload = json.loads(gzip.decompress(compressed_payload))
     return decoded_payload
-
-
-def _is_json(message):
-    if message.startswith("{"):
-        return True
 
 
 def _stream_labels(log_labels, nested_json):
@@ -48,55 +48,14 @@ def _template_message(nested_json, config, stream_labels):
     return message, stream_labels
 
 
-def _streams(config, cloudwatch_event):
-    log_data = _decode_log_data(cloudwatch_event)
-    streams = {"streams": []}
-    stream_labels = {"logGroup": log_data["logGroup"]}
-
-    for log_entry in log_data["logEvents"]:
-        print(f"log entry: {log_entry}")
-
-        # it can be useful to ignore log lines not in JSON format when expecting
-        # log lines in JSON format - for example, when dealing with java apps
-        # which can have a logback configuration which dumps stack traces to console
-        # at the same time as writing them out as JSON
-        if not _is_json(log_entry["message"]) and config.log_ignore_non_json:
-            print(f"warning: skipping non-JSON log entry!")
-            continue
-
-        # if the application message is in JSON format then we can do
-        # more interesting things with it than just log the message as-is
-        if _is_json(log_entry["message"]):
-            nested_json = json.loads(log_entry["message"])
-
-        # Lookup any label values from the nested json object and set them
-        # as stream labels, if specified with LOG_LABELS
-        if config.log_labels and _is_json(log_entry["message"]):
-            stream_labels.update(_stream_labels(config.log_labels, nested_json))
-            print(f"stream labels: {stream_labels}")
-
-        # Convert JSON string into a nicely formatted log message based
-        # on template supplied by LOG_TEMPLATE
-        if config.log_template and _is_json(log_entry["message"]):
-            message, stream_labels = _template_message(
-                nested_json, config, stream_labels
-            )
-        else:
-            # If not JSON then just use the entire string as the log message
-            message = log_entry["message"]
-
-        timestamp = str(log_entry["timestamp"] * 1000000)
-        stream_value = [timestamp, message]
-
-        # For simplicities sake during labelling, create a new stream for every log line
-        # rather than batching up the log lines. This is because labels are per set of
-        # streams however log lines can have different label values
-        stream = {"stream": stream_labels, "values": [stream_value]}
-        streams["streams"].append(stream)
-
-        print(f"processed log entry: {stream_value}, log labels: {stream_labels}")
-
-    return streams
+def _json_message(nested_json, config, stream_labels):
+    # Convert JSON string into a formatted log message based on template supplied by LOG_TEMPLATE
+    if config.log_template:
+        message, stream_labels = _template_message(nested_json, config, stream_labels)
+    else:
+        # If no log template set then just use the entire string as the log message
+        message = str(nested_json)
+    return message
 
 
 def _loki_push(config, stream_data):
@@ -123,6 +82,50 @@ def _environment_config():
     ).split(",")
     config.log_ignore_non_json = os.environ.get("LOG_IGNORE_NON_JSON", False)
     return config
+
+
+def _streams(config, cloudwatch_event):
+    log_data = _decode_log_data(cloudwatch_event)
+    streams = {"streams": []}
+    stream_labels = {"logGroup": log_data["logGroup"]}
+
+    for log_entry in log_data["logEvents"]:
+        print(f"log entry: {log_entry}")
+
+        if _is_json["message"]:
+            # If the application message is in JSON format then we can do
+            # more interesting things with it than just log the message as-is
+            nested_json = json.loads(log_entry["message"])
+
+            # Lookup any label values from the nested json object and set them
+            # as stream labels, if specified with LOG_LABELS
+            if config.log_labels:
+                stream_labels.update(_stream_labels(config.log_labels, nested_json))
+                print(f"stream labels: {stream_labels}")
+
+            message = _json_message(nested_json, config, stream_labels)
+        elif config.log_ignore_non_json:
+            # It can be useful to ignore log lines not in JSON format when expecting
+            # log lines in JSON format - for example, when dealing with java apps
+            # which can have a logback configuration which dumps stack traces to console
+            # at the same time as writing them out as JSON
+            print(f"warning: skipping non-JSON log entry!")
+            continue
+        else:
+            # If not a JSON log then just pass through the entire message as the log line
+            message = log_entry["message"]
+
+        timestamp = str(log_entry["timestamp"] * 1000000)
+        stream_value = [timestamp, message]
+
+        # For simplicities sake during labelling, create a new stream for every log line
+        # rather than batching up the log lines. This is because labels are per set of
+        # streams however log lines can have different label values
+        stream = {"stream": stream_labels, "values": [stream_value]}
+        streams["streams"].append(stream)
+        print(f"processed log entry: {stream_value}, log labels: {stream_labels}")
+
+    return streams
 
 
 def lambda_handler(cloudwatch_event, context):
