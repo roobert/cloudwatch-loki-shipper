@@ -17,29 +17,35 @@ def _decode_log_data(event):
 
 
 def _is_json(message):
-    if not message.startswith("{"):
-        print(f"warning: skipping - log entry is not JSON!")
+    if message.startswith("{"):
         return True
 
 
-def _stream_labels(log_labels, embedded_json):
+def _stream_labels(log_labels, nested_json):
     stream_labels = {}
     for label in log_labels:
-        if label not in embedded_json:
+        if label not in nested_json:
             print(f"stream label not found: {label}")
             continue
-        stream_labels[label] = embedded_json[label]
+        stream_labels[label] = nested_json[label]
     return stream_labels
 
 
-def _template_variables(log_template_variables, embedded_json):
+def _template_variables(log_template_variables, nested_json):
     template_variables = {}
     for variable in log_template_variables:
-        if variable not in embedded_json:
+        if variable not in nested_json:
             print(f"template variable not found: {variable}")
             continue
-        template_variables[variable] = embedded_json[variable]
+        template_variables[variable] = nested_json[variable]
     return template_variables
+
+
+def _template_message(nested_json, config, stream_labels):
+    template_variables = _template_variables(config.log_template_variables, nested_json)
+    print(f"template variables: {template_variables}")
+    message = Template(config.log_template).substitute(**template_variables)
+    return message, stream_labels
 
 
 def _streams(config, cloudwatch_event):
@@ -49,27 +55,45 @@ def _streams(config, cloudwatch_event):
 
     for log_entry in log_data["logEvents"]:
         print(f"log entry: {log_entry}")
-        if _is_json(log_entry["message"]):
+
+        # it can be useful to ignore log lines not in JSON format when expecting
+        # log lines in JSON format - for example, when dealing with java apps
+        # which can have a logback configuration which dumps stack traces to console
+        # at the same time as writing them out as JSON
+        if not _is_json(log_entry["message"]) and config.log_ignore_non_json:
+            print(f"warning: skipping non-JSON log entry!")
             continue
 
-        if config.log_labels:
-            embedded_json = json.loads(log_entry["message"])
-            stream_labels.update(_stream_labels(config.log_labels, embedded_json))
+        # if the application message is in JSON format then we can do
+        # more interesting things with it than just log the message as-is
+        if _is_json(log_entry["message"]):
+            nested_json = json.loads(log_entry["message"])
+
+        # Lookup any label values from the nested json object and set them
+        # as stream labels, if specified with LOG_LABELS
+        if config.log_labels and _is_json(log_entry["message"]):
+            stream_labels.update(_stream_labels(config.log_labels, nested_json))
             print(f"stream labels: {stream_labels}")
-            template_variables = _template_variables(
-                config.log_template_variables, embedded_json
+
+        # Convert JSON string into a nicely formatted log message based
+        # on template supplied by LOG_TEMPLATE
+        if config.log_template and _is_json(log_entry["message"]):
+            message, stream_labels = _template_message(
+                nested_json, config, stream_labels
             )
-            print(f"template variables: {template_variables}")
-            message = Template(config.log_template).substitute(**template_variables)
         else:
+            # If not JSON then just use the entire string as the log message
             message = log_entry["message"]
 
         timestamp = str(log_entry["timestamp"] * 1000000)
         stream_value = [timestamp, message]
 
-        # for simplicities sake during labelling, create a new stream for every log line
+        # For simplicities sake during labelling, create a new stream for every log line
+        # rather than batching up the log lines. This is because labels are per set of
+        # streams however log lines can have different label values
         stream = {"stream": stream_labels, "values": [stream_value]}
         streams["streams"].append(stream)
+
         print(f"processed log entry: {stream_value}, log labels: {stream_labels}")
 
     return streams
@@ -78,7 +102,6 @@ def _streams(config, cloudwatch_event):
 def _loki_push(config, stream_data):
     print(f"sending request to: {config.loki_endpoint}, payload: {stream_data}")
     response = requests.post(config.loki_endpoint, json=stream_data)
-
     if response.status_code != 204:
         print(f"request failed: {response.text}")
 
@@ -86,8 +109,10 @@ def _loki_push(config, stream_data):
 def _environment_config():
     if ("LOG_TEMPLATE" in os.environ) and not ("LOG_LABELS" in os.environ):
         print("ignoring LOG_TEMPLATE since no LOG_LABELS are set")
-
-    config = namedtuple("Config", "loki_endpoint log_labels log_template")
+    config = namedtuple(
+        "Config",
+        "loki_endpoint log_labels log_template log_template_variables log_ignore_non_json",
+    )
     config.loki_endpoint = urljoin(
         os.environ.get("LOKI_ENDPOINT", "http://localhost:3100"), "/loki/api/v1/push"
     )
@@ -96,6 +121,7 @@ def _environment_config():
     config.log_template_variables = os.environ.get(
         "LOG_TEMPLATE_VARIABLES", "message"
     ).split(",")
+    config.log_ignore_non_json = os.environ.get("LOG_IGNORE_NON_JSON", False)
     return config
 
 
