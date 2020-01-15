@@ -13,7 +13,7 @@ fi
 python3 -m venv venv
 
 . venv/bin/activate
-pip3 install -r <(pip3 freeze)
+pip3 install -r requirements.txt
 
 PACKAGE_DIR=$(find ${PROJECT_ROOT}/venv -name "site-packages")
 
