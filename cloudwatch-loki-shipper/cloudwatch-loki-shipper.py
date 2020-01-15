@@ -92,7 +92,7 @@ def _streams(config, cloudwatch_event):
     for log_entry in log_data["logEvents"]:
         print(f"log entry: {log_entry}")
 
-        if _is_json["message"]:
+        if _is_json(log_entry["message"]):
             # If the application message is in JSON format then we can do
             # more interesting things with it than just log the message as-is
             nested_json = json.loads(log_entry["message"])
