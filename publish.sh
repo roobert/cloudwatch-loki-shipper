@@ -9,4 +9,4 @@ fi
 S3_BUCKET="${1}"
 ACCOUNT_NAME="${2}"
 
-aws s3 cp shipper-loki.zip "s3://${S3_BUCKET}/shipper-loki.zip" --profile "${ACCOUNT_NAME}"
+aws s3 cp cloudwatch-loki-shipper.zip "s3://${S3_BUCKET}/cloudwatch-loki-shipper.zip" --profile "${ACCOUNT_NAME}"
