@@ -16,7 +16,7 @@ python3 -m venv venv
 pip3 install -r <(pip3 freeze)
 
 cd "${PACKAGE_DIR}"
-zip -r9 "${TARGET_DIR}/cloudwatch-loki-shipper.zip" .
+zip -r9 "${TARGET_DIR}/lambda.zip" .
 
 cd "${SHIPPER_DIR}"
-zip -g "${TARGET_DIR}/cloudwatch-loki-shipper.zip" cloudwatch-loki-shipper.py
+zip -g "${TARGET_DIR}/lambda.zip" cloudwatch-loki-shipper.py
